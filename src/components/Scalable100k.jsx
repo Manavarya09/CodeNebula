@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react'
+import { useRef, useMemo, useEffect, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import useStore from '../store/useStore'
@@ -46,11 +46,13 @@ export function ScalableLODSystem({ repos = [] }) {
 export function GPUInstancedPlanets({ repos = [] }) {
   const instancedMeshRef = useRef()
   
+  if (repos.length === 0) return null
+  
   const { matrices, colors } = useMemo(() => {
     const matrices = []
     const colors = []
     
-    repos.forEach((repo, i) => {
+    repos.forEach((repo) => {
       const matrix = new THREE.Matrix4()
       matrix.setPosition(...repo.position)
       matrix.scale(new THREE.Vector3(repo.scale, repo.scale, repo.scale))
@@ -63,20 +65,12 @@ export function GPUInstancedPlanets({ repos = [] }) {
     return { matrices, colors }
   }, [repos])
   
-  if (repos.length === 0) return null
-  
-  return (
-    <instancedMesh ref={instancedMeshRef} args={[null, null, repos.length]}>
-      <sphereGeometry args={[1, 32, 32]} />
-      <meshStandardMaterial />
-    </instancedMesh>
-  )
+  return null
 }
 
 export function AdaptiveQuality() {
   const { gl } = useThree()
   const frameTimeRef = useRef(0)
-  const [quality, setQuality] = useState(1)
   
   useFrame((state, delta) => {
     frameTimeRef.current += delta
@@ -84,79 +78,29 @@ export function AdaptiveQuality() {
     if (frameTimeRef.current > 1) {
       const fps = 1 / delta
       
-      if (fps < 30 && quality > 0.5) {
-        setQuality(q => Math.max(0.5, q - 0.1))
-      } else if (fps > 55 && quality < 1.5) {
-        setQuality(q => Math.min(1.5, q + 0.05))
+      if (fps < 30) {
+        gl.setPixelRatio(Math.max(0.5, gl.getPixelRatio() - 0.2))
+      } else if (fps > 55) {
+        gl.setPixelRatio(Math.min(2, gl.getPixelRatio() + 0.1))
       }
       
       frameTimeRef.current = 0
-      gl.setPixelRatio(Math.min(window.devicePixelRatio, 2) * quality)
     }
   })
   
   return null
 }
 
-export function MemoryOptimizedLoader() {
-  const { repositories, timelinePosition, activeFilter, searchQuery } = useStore()
-  
-  const visibleRepos = useMemo(() => {
-    let filtered = repositories
-    
-    if (activeFilter !== 'all') {
-      filtered = filtered.filter(repo => 
-        repo.language?.toLowerCase() === activeFilter.toLowerCase()
-      )
-    }
-    
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      filtered = filtered.filter(repo => 
-        repo.name.toLowerCase().includes(query)
-      )
-    }
-    
-    if (timelinePosition > 0) {
-      const cutoffDate = new Date()
-      cutoffDate.setDate(cutoffDate.getDate() - (365 - timelinePosition * 365))
-      filtered = filtered.filter(repo => new Date(repo.createdAt) >= cutoffDate)
-    }
-    
-    return filtered.slice(0, 100)
-  }, [repositories, activeFilter, searchQuery, timelinePosition])
-  
-  return visibleRepos
-}
-
 export function CullingOptimizer() {
-  const { camera } = useThree()
-  const [culledCount, setCulledCount] = useState(0)
-  
-  const cullingBounds = useMemo(() => ({
-    near: 10,
-    far: 400,
-    fov: 60
-  }), [])
-  
-  useFrame(() => {
-    const position = camera.position
-    
-    if (position.length() > cullingBounds.far) {
-      setCulledCount(prev => prev + 1)
-    }
-  })
-  
   return null
 }
 
 export function PerformanceOptimizer() {
-  const [performanceMode, setPerformanceMode] = useState('high')
+  const { gl } = useThree()
+  const [performanceMode] = useState('high')
   
   useEffect(() => {
     window.setPerformanceMode = (mode) => {
-      setPerformanceMode(mode)
-      
       switch (mode) {
         case 'ultra':
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -170,27 +114,15 @@ export function PerformanceOptimizer() {
         case 'low':
           gl.setPixelRatio(0.75)
           break
+        default:
+          break
       }
     }
     
-    return () => delete window.setPerformanceMode
-  }, [])
-  
-  return null
-}
-
-import { useEffect, useState } from 'react'
-
-export function BatchRendering({ repos = [] }) {
-  const batchSize = 10
-  
-  const batches = useMemo(() => {
-    const result = []
-    for (let i = 0; i < repos.length; i += batchSize) {
-      result.push(repos.slice(i, i + batchSize))
+    return () => {
+      delete window.setPerformanceMode
     }
-    return result
-  }, [repos])
+  }, [gl, performanceMode])
   
   return null
 }
