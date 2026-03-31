@@ -6,6 +6,8 @@ import useStore from '../store/useStore'
 import { generateCommitParticles } from '../utils/dataMapper'
 import OrbitParticles from './OrbitParticles'
 import { PlanetAtmosphere } from './Atmosphere'
+import DetailedMoon from './DetailedMoon'
+import RealisticRing from './RealisticRing'
 
 const planetVertexShader = `
   varying vec2 vUv;
@@ -67,10 +69,8 @@ const planetVertexShader = `
     vUv = uv;
     vNormal = normalize(normalMatrix * normal);
     vPosition = position;
-    
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
     vViewPosition = -mvPosition.xyz;
-    
     gl_Position = projectionMatrix * mvPosition;
   }
 `
@@ -153,35 +153,42 @@ const planetFragmentShader = `
   void main() {
     vec3 viewDir = normalize(vViewPosition);
     vec3 normal = normalize(vNormal);
-    
     float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), uFresnelPower);
     
-    vec3 pos = vPosition * 4.0;
+    vec3 pos = vPosition * 5.0;
     float noise1 = fbm(pos + uTime * 0.1);
     float noise2 = fbm(pos * 2.0 - uTime * 0.05);
     float noise3 = fbm(pos * 0.5 + uTime * 0.02);
+    float noise4 = fbm(pos * 4.0);
     
-    float combinedNoise = noise1 * 0.5 + noise2 * 0.3 + noise3 * 0.2;
+    float combinedNoise = noise1 * 0.4 + noise2 * 0.3 + noise3 * 0.2 + noise4 * 0.1;
     
     vec3 baseColor = mix(uColor, uColor2, combinedNoise * 0.5 + 0.5);
     
     vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
-    float lighting = max(dot(normal, lightDir), 0.0);
-    lighting = lighting * 0.6 + 0.4;
+    float NdotL = max(dot(normal, lightDir), 0.0);
+    float wrap = max(dot(normal, lightDir) * 0.5 + 0.5, 0.0);
     
-    vec3 ambient = baseColor * 0.15;
-    vec3 diffuse = baseColor * lighting;
+    vec3 ambient = baseColor * 0.12;
+    vec3 diffuse = baseColor * wrap * 0.8;
     
     vec3 halfDir = normalize(lightDir + viewDir);
     float specular = pow(max(dot(normal, halfDir), 0.0), 64.0);
     specular *= (1.0 - uRoughness) * 0.8;
     
-    vec3 emissive = baseColor * uEmissiveIntensity * (1.0 + sin(uTime * 2.0 + vPosition.y * 3.0) * 0.3);
+    float sss = pow(max(dot(viewDir, -lightDir), 0.0), 3.0) * 0.15;
+    vec3 sssColor = uColor * sss;
     
-    vec3 finalColor = ambient + diffuse + specular * vec3(1.0, 0.95, 0.9) + emissive;
+    vec3 emissive = uColor * uEmissiveIntensity * (1.0 + sin(uTime * 2.0 + vPosition.y * 3.0) * 0.3);
+    
+    vec3 finalColor = ambient + diffuse + specular * vec3(1.0, 0.95, 0.9) + sssColor + emissive * 0.15;
     
     vec3 rimColor = uAtmosphereColor * fresnel * uAtmosphereIntensity;
     finalColor += rimColor;
+    
+    float cloudNoise = fbm(pos * 1.5 + vec3(uTime * 0.02, 0.0, 0.0));
+    float clouds = smoothstep(0.2, 0.6, cloudNoise) * 0.25;
+    finalColor += vec3(1.0) * clouds;
     
     gl_FragColor = vec4(finalColor, 1.0);
   }
@@ -189,33 +196,24 @@ const planetFragmentShader = `
 
 const ringVertexShader = `
   varying vec2 vUv;
-  varying vec3 vPosition;
-  
   void main() {
     vUv = uv;
-    vPosition = position;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `
 
 const ringFragmentShader = `
   varying vec2 vUv;
-  varying vec3 vPosition;
-  
   uniform float uTime;
   uniform vec3 uColor;
   uniform float uOpacity;
   
   void main() {
     float dist = abs(vUv.x - 0.5) * 2.0;
-    
-    float alpha = (1.0 - dist) * uOpacity;
-    
-    float bands = sin(vUv.x * 50.0 + uTime) * 0.5 + 0.5;
-    alpha *= 0.7 + bands * 0.3;
-    
+    float alpha = (1.0 - pow(dist, 1.5)) * uOpacity;
+    float bands = sin(vUv.x * 100.0 + uTime * 0.5) * 0.5 + 0.5;
+    alpha *= 0.6 + bands * 0.4;
     vec3 color = uColor * (1.0 + bands * 0.3);
-    
     gl_FragColor = vec4(color, alpha);
   }
 `
@@ -226,7 +224,7 @@ export default function Planet({ repo }) {
   const glowRef = useRef()
   const [hovered, setHovered] = useState(false)
   
-  const { selectedRepo, setSelectedRepo, setHoveredRepo, cameraTarget } = useStore()
+  const { selectedRepo, setSelectedRepo, setHoveredRepo } = useStore()
   const isSelected = selectedRepo?.id === repo.id
   const isOtherSelected = selectedRepo && selectedRepo.id !== repo.id
   
@@ -234,7 +232,7 @@ export default function Planet({ repo }) {
   
   const secondaryColor = useMemo(() => {
     const color = new THREE.Color(repo.languageColor)
-    color.offsetHSL(0.1, 0, 0.2)
+    color.offsetHSL(0.1, 0.3, -0.15)
     return color
   }, [repo.languageColor])
   
@@ -242,23 +240,22 @@ export default function Planet({ repo }) {
     uTime: { value: 0 },
     uColor: { value: new THREE.Color(repo.languageColor) },
     uColor2: { value: secondaryColor },
-    uEmissiveIntensity: { value: 0.4 },
-    uRoughness: { value: 0.6 },
-    uMetalness: { value: 0.4 },
-    uFresnelPower: { value: 3.0 },
+    uEmissiveIntensity: { value: 0.5 },
+    uRoughness: { value: 0.55 },
+    uMetalness: { value: 0.45 },
+    uFresnelPower: { value: 3.5 },
     uAtmosphereColor: { value: new THREE.Color(repo.languageColor) },
-    uAtmosphereIntensity: { value: 0.8 }
+    uAtmosphereIntensity: { value: 1.0 }
   }), [repo.languageColor, secondaryColor])
   
   const ringUniforms = useMemo(() => ({
     uTime: { value: 0 },
     uColor: { value: new THREE.Color(repo.ringColor) },
-    uOpacity: { value: 0.4 }
+    uOpacity: { value: 0.5 }
   }), [repo.ringColor])
   
   useFrame((state) => {
     if (!meshRef.current) return
-    
     const time = state.clock.elapsedTime
     const angle = time * repo.orbitSpeed + repo.orbitPhase
     const radius = repo.orbitRadius
@@ -267,33 +264,30 @@ export default function Planet({ repo }) {
     meshRef.current.position.z = Math.sin(angle) * radius
     meshRef.current.position.y = Math.sin(time * 0.5 + repo.orbitPhase) * 2
     
-    meshRef.current.rotation.y += 0.003
+    meshRef.current.rotation.y += 0.002
     
     if (meshRef.current.material.uniforms) {
       meshRef.current.material.uniforms.uTime.value = time
-      meshRef.current.material.uniforms.uEmissiveIntensity.value = hovered || isSelected ? 0.8 : 0.4
+      meshRef.current.material.uniforms.uEmissiveIntensity.value = hovered || isSelected ? 0.9 : 0.5
     }
     
     if (ringRef.current) {
-      ringRef.current.rotation.z += 0.003
+      ringRef.current.rotation.z += 0.002
       if (ringRef.current.material.uniforms) {
         ringRef.current.material.uniforms.uTime.value = time
       }
     }
     
     if (glowRef.current) {
-      const scale = hovered || isSelected ? 1.4 : 1.2
-      glowRef.current.scale.lerp(new THREE.Vector3(scale, scale, scale), 0.1)
+      const targetScale = hovered || isSelected ? 1.5 : 1.25
+      glowRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.08)
     }
   })
   
   const handleClick = (e) => {
     e.stopPropagation()
-    if (isSelected) {
-      setSelectedRepo(null)
-    } else {
-      setSelectedRepo(repo)
-    }
+    if (isSelected) setSelectedRepo(null)
+    else setSelectedRepo(repo)
   }
   
   const handlePointerOver = (e) => {
@@ -309,7 +303,7 @@ export default function Planet({ repo }) {
     document.body.style.cursor = 'auto'
   }
   
-  const opacity = isOtherSelected ? 0.25 : 1
+  const opacity = isOtherSelected ? 0.2 : 1
   
   return (
     <group>
@@ -320,7 +314,7 @@ export default function Planet({ repo }) {
           onPointerOver={handlePointerOver}
           onPointerOut={handlePointerOut}
         >
-          <sphereGeometry args={[repo.scale, 64, 64]} />
+          <sphereGeometry args={[repo.scale, 96, 96]} />
           <shaderMaterial
             vertexShader={planetVertexShader}
             fragmentShader={planetFragmentShader}
@@ -333,32 +327,29 @@ export default function Planet({ repo }) {
         <PlanetAtmosphere 
           scale={repo.scale} 
           color={repo.languageColor} 
-          intensity={hovered || isSelected ? 0.8 : 0.5}
+          intensity={hovered || isSelected ? 1.0 : 0.6}
         />
         
-        <mesh ref={glowRef} scale={1.15}>
+        <mesh ref={glowRef} scale={1.2}>
           <sphereGeometry args={[repo.scale, 32, 32]} />
           <meshBasicMaterial
             color={repo.languageColor}
             transparent
-            opacity={hovered || isSelected ? 0.25 : 0.1}
+            opacity={hovered || isSelected ? 0.35 : 0.12}
             side={THREE.BackSide}
           />
         </mesh>
         
         {repo.hasRing && (
-          <mesh ref={ringRef} rotation={[Math.PI / 2.5, 0, 0]}>
-            <ringGeometry args={[repo.scale * 1.5, repo.scale * 2.2, 128]} />
-            <shaderMaterial
-              vertexShader={ringVertexShader}
-              fragmentShader={ringFragmentShader}
-              uniforms={ringUniforms}
-              transparent
-              side={THREE.DoubleSide}
-              depthWrite={false}
-              blending={THREE.AdditiveBlending}
+          <group ref={ringRef} rotation={[Math.PI / 2.5, 0, 0]}>
+            <RealisticRing 
+              innerRadius={repo.scale * 1.6} 
+              outerRadius={repo.scale * 2.4} 
+              color={repo.ringColor}
+              planetRadius={repo.scale}
+              planetPosition={[0, 0, 0]}
             />
-          </mesh>
+          </group>
         )}
         
         <OrbitParticles
@@ -369,55 +360,64 @@ export default function Planet({ repo }) {
         
         {repo.moonCount > 0 && (
           <group>
-            {[...Array(Math.min(repo.moonCount, 3))].map((_, i) => (
-              <Moon key={i} index={i} planetScale={repo.scale} orbitSpeed={0.02 + i * 0.01} />
-            ))}
+            {[...Array(Math.min(repo.moonCount, 3))].map((_, i) => {
+              const moonColors = ['#999999', '#888888', '#aaaaaa']
+              return (
+                <MoonOrbit 
+                  key={i} 
+                  index={i} 
+                  planetScale={repo.scale} 
+                  orbitSpeed={0.015 + i * 0.008}
+                  color={moonColors[i % 3]}
+                />
+              )
+            })}
           </group>
         )}
         
         {(hovered || isSelected) && (
           <Html
-            position={[0, repo.scale + 1.5, 0]}
+            position={[0, repo.scale + 2, 0]}
             center
-            distanceFactor={15}
+            distanceFactor={18}
             style={{ pointerEvents: 'none' }}
           >
             <div style={{
-              background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.9))',
-              border: `1px solid ${repo.languageColor}60`,
-              borderRadius: '12px',
-              padding: '12px 16px',
+              background: 'linear-gradient(135deg, rgba(10, 20, 40, 0.95), rgba(20, 35, 60, 0.9))',
+              border: `1px solid ${repo.languageColor}80`,
+              borderRadius: '16px',
+              padding: '16px 20px',
               whiteSpace: 'nowrap',
-              backdropFilter: 'blur(20px)',
-              transform: 'translateY(-30px)',
-              boxShadow: `0 0 30px ${repo.languageColor}30`,
+              backdropFilter: 'blur(25px)',
+              transform: 'translateY(-40px)',
+              boxShadow: `0 0 40px ${repo.languageColor}40, 0 20px 60px rgba(0,0,0,0.5)`,
             }}>
               <div style={{
                 fontFamily: 'Orbitron, sans-serif',
-                fontSize: '14px',
+                fontSize: '16px',
                 fontWeight: 700,
-                background: `linear-gradient(90deg, ${repo.languageColor}, ${repo.languageColor}aa)`,
+                background: `linear-gradient(90deg, ${repo.languageColor}, #ffffff)`,
                 WebkitBackgroundClip: 'text',
                 WebkitTextFillColor: 'transparent',
-                textShadow: `0 0 20px ${repo.languageColor}50`,
+                textShadow: `0 0 30px ${repo.languageColor}60`,
               }}>
                 {repo.name}
               </div>
               {repo.language && (
                 <div style={{
-                  fontSize: '11px',
-                  color: 'rgba(255,255,255,0.7)',
+                  fontSize: '12px',
+                  color: 'rgba(255,255,255,0.8)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  marginTop: '6px',
+                  gap: '8px',
+                  marginTop: '8px',
                 }}>
                   <span style={{
-                    width: '8px',
-                    height: '8px',
+                    width: '10px',
+                    height: '10px',
                     borderRadius: '50%',
                     background: repo.languageColor,
-                    boxShadow: `0 0 10px ${repo.languageColor}`,
+                    boxShadow: `0 0 15px ${repo.languageColor}`,
                   }} />
                   {repo.language}
                 </div>
@@ -430,26 +430,21 @@ export default function Planet({ repo }) {
   )
 }
 
-function Moon({ index, planetScale, orbitSpeed }) {
-  const moonRef = useRef()
-  const orbitRadius = planetScale * (2.5 + index * 0.8)
+function MoonOrbit({ index, planetScale, orbitSpeed, color }) {
+  const groupRef = useRef()
+  const orbitRadius = planetScale * (2.8 + index * 1.0)
   const orbitPhase = (index / 3) * Math.PI * 2
   
   useFrame((state) => {
-    if (!moonRef.current) return
+    if (!groupRef.current) return
     const time = state.clock.elapsedTime
-    moonRef.current.position.x = Math.cos(time * orbitSpeed * 10 + orbitPhase) * orbitRadius
-    moonRef.current.position.z = Math.sin(time * orbitSpeed * 10 + orbitPhase) * orbitRadius
+    groupRef.current.position.x = Math.cos(time * orbitSpeed * 10 + orbitPhase) * orbitRadius
+    groupRef.current.position.z = Math.sin(time * orbitSpeed * 10 + orbitPhase) * orbitRadius
   })
   
   return (
-    <mesh ref={moonRef}>
-      <sphereGeometry args={[planetScale * 0.12, 16, 16]} />
-      <meshStandardMaterial 
-        color="#999999" 
-        roughness={0.7}
-        metalness={0.3}
-      />
-    </mesh>
+    <group ref={groupRef}>
+      <DetailedMoon scale={planetScale * 0.12} color={color} />
+    </group>
   )
 }
