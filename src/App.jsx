@@ -27,7 +27,7 @@ function App() {
     fetchData(username)
   }
   
-  const handleKeyPress = (e) => {
+  const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
       fetchData(username)
     }
@@ -53,7 +53,7 @@ function App() {
             placeholder="Enter GitHub username..."
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
           />
           <button 
             type="submit" 
